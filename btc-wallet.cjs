@@ -59,6 +59,8 @@ async function loadWallet() {
   const walletPath = path.join(process.env.HOME || "/root", ".config", "btc-wallet", "wallet.json");
   if (fs.existsSync(walletPath)) {
     wallet = JSON.parse(fs.readFileSync(walletPath, "utf8"));
+    // Handle both "testnet" boolean and "network": "testnet" string
+    wallet.testnet = wallet.testnet || wallet.network === "testnet";
     currentNetwork = wallet.testnet ? testnet : network;
     
     // If we have a mnemonic, derive BIP86 key
@@ -319,6 +321,50 @@ function info() {
   if (wallet.imported) console.log(`   Imported: ${wallet.imported}`);
 }
 
+// Derive addresses from different paths (diagnostics)
+function derivePaths() {
+  if (!wallet) {
+    console.log("No wallet found.");
+    return;
+  }
+  
+  if (!wallet.mnemonic) {
+    console.log("Cannot derive paths from WIF. Need mnemonic.");
+    return;
+  }
+  
+  const { HDKey } = require('@scure/bip32');
+  const { mnemonicToSeedSync } = require('@scure/bip39');
+  const { payments, networks } = require('bitcoinjs-lib');
+  
+  const seed = mnemonicToSeedSync(wallet.mnemonic);
+  const network = wallet.testnet ? networks.testnet : networks.bitcoin;
+  const root = HDKey.fromMasterSeed(seed);
+  
+  const paths = wallet.testnet ? [
+    "m/86'/1'/0'/0/0", // BIP86 Taproot
+    "m/84'/1'/0'/0/0", // BIP84 native segwit
+    "m/44'/1'/0'/0/0", // BIP44 legacy
+  ] : [
+    "m/86'/0'/0'/0/0", // BIP86 Taproot
+    "m/84'/0'/0'/0/0", // BIP84 native segwit
+    "m/44'/0'/0'/0/0", // BIP44 legacy
+  ];
+  
+  console.log("\nAddresses at different derivation paths:\n");
+  for (const path of paths) {
+    try {
+      const child = root.derive(path);
+      const xOnly = Buffer.from(child.publicKey.slice(1));
+      const p2tr = payments.p2tr({ pubkey: xOnly, network });
+      console.log("   " + path);
+      console.log("      " + p2tr.address + "\n");
+    } catch (e) {
+      console.log("   " + path + ": Error - " + e.message);
+    }
+  }
+}
+
 // CLI
 const args = process.argv.slice(2);
 const testnetIdx = args.indexOf("--testnet");
@@ -416,6 +462,11 @@ switch (command) {
   case "info":
     loadWallet();
     info();
+    break;
+  
+  case "derive":
+    loadWallet();
+    derivePaths();
     break;
   
   case "clear":
