@@ -36,8 +36,8 @@ const toXOnly = (pubkey) => {
   return Buffer.from(pubkey);
 };
 
-// BIP86 derivation using @scure/bip32
-async function deriveBIP86Key(mnemonic, isTestnet = false) {
+// BIP86 derivation using @scure/bip32 (synchronous)
+function deriveBIP86Key(mnemonic, isTestnet = false) {
   const { HDKey } = require('@scure/bip32');
   const { mnemonicToSeedSync } = require('@scure/bip39');
   
@@ -54,8 +54,8 @@ async function deriveBIP86Key(mnemonic, isTestnet = false) {
   };
 }
 
-// Helper: Load or create wallet (async for BIP86)
-async function loadWallet() {
+// Helper: Load or create wallet
+function loadWallet() {
   const walletPath = path.join(process.env.HOME || "/root", ".config", "btc-wallet", "wallet.json");
   if (fs.existsSync(walletPath)) {
     wallet = JSON.parse(fs.readFileSync(walletPath, "utf8"));
@@ -65,7 +65,7 @@ async function loadWallet() {
     
     // If we have a mnemonic, derive BIP86 key
     if (wallet.mnemonic) {
-      derivedKey = await deriveBIP86Key(wallet.mnemonic, wallet.testnet);
+      derivedKey = deriveBIP86Key(wallet.mnemonic, wallet.testnet);
     }
   }
 }
