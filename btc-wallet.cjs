@@ -313,12 +313,25 @@ function signPsbt(psbt) {
   let keyPair;
   if (derivedKey) {
     keyPair = ECPair.fromPrivateKey(derivedKey.privateKey, currentNetwork);
+    
+
   } else {
     keyPair = ECPair.fromWIF(wallet.privateKey, currentNetwork);
   }
   
+  // Compute BIP341 tweak: t = H_TapTweak(internalKey)
+  const crypto = require('crypto');
+  const taggedHash = crypto.createHash('sha256');
+  taggedHash.update(Buffer.from('TapTweak'));
+  taggedHash.update(Buffer.from('TapTweak'));
+  taggedHash.update(derivedKey.xOnly);
+  const tweakHash = taggedHash.digest();
+  
+  // Apply tweak to get the key that can sign (tweaked key)
+  const tweakedKey = keyPair.tweak(tweakHash);
+  
   for (let i = 0; i < psbt.data.inputs.length; i++) {
-    psbt.signInput(i, keyPair);
+    psbt.signInput(i, tweakedKey);
   }
   
   for (let i = 0; i < psbt.data.inputs.length; i++) {
