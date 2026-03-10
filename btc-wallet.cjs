@@ -47,11 +47,17 @@ function deriveBIP86Key(mnemonic, isTestnet = false) {
   const path = isTestnet ? "m/86'/1'/0'/0/0" : "m/86'/0'/0'/0/0";
   const key = root.derive(path);
   
-  return {
-    privateKey: Buffer.from(key.privateKey),
-    publicKey: Buffer.from(key.publicKey),
-    xOnly: Buffer.from(key.publicKey.slice(1))
-  };
+  // CRITICAL: @scure/bip32 returns Uint8Array views into a larger ArrayBuffer.
+  // Buffer.from(uint8array) without offset/length copies from position 0 of the
+  // underlying ArrayBuffer — giving wrong bytes if byteOffset is non-zero.
+  const rawPriv = key.privateKey;
+  const rawPub  = key.publicKey;
+  
+  const privateKey = Buffer.from(rawPriv.buffer, rawPriv.byteOffset, rawPriv.byteLength);
+  const publicKey  = Buffer.from(rawPub.buffer, rawPub.byteOffset, rawPub.byteLength);
+  const xOnly      = publicKey.slice(1); // strip 02/03 prefix → 32-byte x-only
+  
+  return { privateKey, publicKey, xOnly };
 }
 
 // Helper: Load or create wallet
@@ -320,14 +326,12 @@ function signPsbt(psbt) {
   }
   
   // Compute BIP341 tweak: t = H_TapTweak(internalKey)
-  const crypto = require('crypto');
-  const taggedHash = crypto.createHash('sha256');
-  taggedHash.update(Buffer.from('TapTweak'));
-  taggedHash.update(Buffer.from('TapTweak'));
-  taggedHash.update(derivedKey.xOnly);
-  const tweakHash = taggedHash.digest();
+  // Use bitcoinjs-lib's taggedHash which correctly implements BIP340 tagged hashing:
+  //   SHA256(SHA256("TapTweak") || SHA256("TapTweak") || data)
+  const internalPubkey = derivedKey ? derivedKey.xOnly : toXOnly(keyPair.publicKey);
+  const tweakHash = bitcoin.crypto.taggedHash('TapTweak', internalPubkey);
   
-  // Apply tweak to get the key that can sign (tweaked key)
+  // Apply tweak to get the key that can sign
   const tweakedKey = keyPair.tweak(tweakHash);
   
   for (let i = 0; i < psbt.data.inputs.length; i++) {
