@@ -144,12 +144,28 @@ async function getBalance() {
     return;
   }
   
+  // Get address from derived key
+  let address = wallet.address;
+  if (!address && derivedKey) {
+    const { payments, networks } = require("bitcoinjs-lib");
+    const p2tr = payments.p2tr({ 
+      internalPubkey: derivedKey.xOnly, 
+      network: wallet.testnet ? networks.testnet : networks.bitcoin 
+    });
+    address = p2tr.address;
+  }
+  
+  if (!address) {
+    console.log("❌ No address available.");
+    return;
+  }
+  
   const baseUrl = wallet.testnet 
     ? "https://mempool.space/testnet/api" 
     : "https://mempool.space/api";
   
   try {
-    const response = await axios.get(`${baseUrl}/address/${wallet.address}`);
+    const response = await axios.get(`${baseUrl}/address/${address}`);
     const data = response.data;
     
     console.log(`💰 Balance: ${data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum} sats`);
@@ -167,12 +183,28 @@ async function getUtxos() {
     return;
   }
   
+  // Get address from derived key
+  let address = wallet.address;
+  if (!address && derivedKey) {
+    const { payments, networks } = require("bitcoinjs-lib");
+    const p2tr = payments.p2tr({ 
+      internalPubkey: derivedKey.xOnly, 
+      network: wallet.testnet ? networks.testnet : networks.bitcoin 
+    });
+    address = p2tr.address;
+  }
+  
+  if (!address) {
+    console.log("❌ No address available.");
+    return;
+  }
+  
   const baseUrl = wallet.testnet 
     ? "https://mempool.space/testnet/api" 
     : "https://mempool.space/api";
   
   try {
-    const response = await axios.get(`${baseUrl}/address/${wallet.address}/utxo`);
+    const response = await axios.get(`${baseUrl}/address/${address}/utxo`);
     const utxos = response.data;
     
     if (utxos.length === 0) {
@@ -197,16 +229,39 @@ async function createPsbt(toAddress, amountSats) {
     return null;
   }
   
+  // Get address from derived key
+  let address = wallet.address;
+  if (!address && derivedKey) {
+    const { payments, networks } = require("bitcoinjs-lib");
+    const p2tr = payments.p2tr({ 
+      internalPubkey: derivedKey.xOnly, 
+      network: wallet.testnet ? networks.testnet : networks.bitcoin 
+    });
+    address = p2tr.address;
+  }
+  
+  if (!address) {
+    console.log("❌ No address available.");
+    return null;
+  }
+  
   const utxos = await getUtxos();
   if (!utxos || utxos.length === 0) {
     console.log("❌ No UTXOs available.");
     return null;
   }
   
-  const keyPair = ECPair.fromWIF(wallet.privateKey, currentNetwork);
-  const changeAddress = wallet.address;
+  // Use derived key if available
+  let keyPair, internalPubkey;
+  if (derivedKey) {
+    keyPair = ECPair.fromPrivateKey(derivedKey.privateKey, currentNetwork);
+    internalPubkey = derivedKey.xOnly;
+  } else {
+    keyPair = ECPair.fromWIF(wallet.privateKey, currentNetwork);
+    internalPubkey = toXOnly(keyPair.publicKey);
+  }
   
-  const internalPubkey = toXOnly(keyPair.publicKey);
+  const changeAddress = address;
   
   const psbt = new bitcoin.Psbt({ network: currentNetwork });
   
@@ -254,7 +309,13 @@ function signPsbt(psbt) {
     return null;
   }
   
-  const keyPair = ECPair.fromWIF(wallet.privateKey, currentNetwork);
+  // Use derived key if available
+  let keyPair;
+  if (derivedKey) {
+    keyPair = ECPair.fromPrivateKey(derivedKey.privateKey, currentNetwork);
+  } else {
+    keyPair = ECPair.fromWIF(wallet.privateKey, currentNetwork);
+  }
   
   for (let i = 0; i < psbt.data.inputs.length; i++) {
     psbt.signInput(i, keyPair);
@@ -309,13 +370,25 @@ async function send(toAddress, amountSats) {
 
 // Show wallet info
 function info() {
+  loadWallet();
   if (!wallet) {
     console.log("❌ No wallet found.");
     return;
   }
   
   console.log(`� wallet info:`);
-  console.log(`   Address: ${wallet.address}`);
+    // Get address from derived key
+  let address = wallet.address;
+  if (!address && derivedKey) {
+    const { payments, networks } = require("bitcoinjs-lib");
+    const p2tr = payments.p2tr({ 
+      internalPubkey: derivedKey.xOnly, 
+      network: wallet.testnet ? networks.testnet : networks.bitcoin 
+    });
+    address = p2tr.address;
+  }
+  
+  console.log(`   Address: ${address}`);
   console.log(`   Network: ${wallet.testnet ? "testnet" : "mainnet"}`);
   if (wallet.created) console.log(`   Created: ${wallet.created}`);
   if (wallet.imported) console.log(`   Imported: ${wallet.imported}`);
