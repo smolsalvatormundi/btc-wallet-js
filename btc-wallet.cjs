@@ -81,9 +81,9 @@ function saveWallet() {
 function getAddress(keyPair) {
   const internalPubkey = toXOnly(keyPair.publicKey);
   
-  // Use pubkey: (not internalPubkey:) for P2TR creation
+  // Use internalPubkey: for P2TR creation (BIP86)
   const p2tr = bitcoin.payments.p2tr({
-    pubkey: internalPubkey,
+    internalPubkey: internalPubkey,
     network: currentNetwork,
   });
   
@@ -356,7 +356,7 @@ function derivePaths() {
     try {
       const child = root.derive(path);
       const xOnly = Buffer.from(child.publicKey.slice(1));
-      const p2tr = payments.p2tr({ pubkey: xOnly, network });
+      const p2tr = payments.p2tr({ internalPubkey: xOnly, network });
       console.log("   " + path);
       console.log("      " + p2tr.address + "\n");
     } catch (e) {
@@ -502,7 +502,7 @@ Options:
 Key fixes:
   ✅ initEccLib called FIRST
   ✅ toXOnly() used (not .slice(1))
-  ✅ pubkey: for P2TR creation
+  ✅ internalPubkey: for P2TR creation (BIP86)
   ✅ tapInternalKey in PSBT input
   ✅ Monkey-patched toXOnly for Buffer
 `);
