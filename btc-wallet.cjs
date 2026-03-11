@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// BTC Wallet CLI - Taproot Ready
+// BTC Wallet CLI v0.0.1 - Taproot Ready
 // Uses bitcoinjs-lib 6.1.6 with fixes
 
 const bitcoin = require("bitcoinjs-lib");
