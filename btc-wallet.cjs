@@ -793,6 +793,317 @@ async function ordinals() {
   console.log(`   Total: ${detailedUtxos.length}`);
 }
 
+// ============================================
+// INTERACTIVE COIN CONTROL
+// ============================================
+
+const readline = require('readline');
+
+function createInterface() {
+  return readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+}
+
+// Interactive UTXO selection with coin control
+async function sendWithCoinControl(destination, amount) {
+  const detailedUtxos = await getDetailedUtxosForSelection();
+  
+  if (detailedUtxos.length === 0) {
+    console.log("No UTXOs found.");
+    return;
+  }
+  
+  // Initialize all selected
+  const selected = detailedUtxos.map(() => true);
+  
+  console.clear();
+  
+  while (true) {
+    console.clear();
+    printCoinControlMenu(detailedUtxos, selected, destination, amount);
+    
+    const rl = createInterface();
+    const choice = await new Promise(resolve => rl.question('', resolve));
+    rl.close();
+    
+    if (choice === 'q') {
+      console.log("\n❌ Cancelled.");
+      return;
+    }
+    
+    if (choice === '') {
+      // Enter - proceed
+      const selectedUtxos = detailedUtxos.filter((_, i) => selected[i]);
+      if (selectedUtxos.length === 0) {
+        console.log("\n⚠️  No UTXOs selected!");
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
+      
+      const totalValue = selectedUtxos.reduce((sum, u) => sum + u.value, 0);
+      if (totalValue < amount) {
+        console.log(`\n⚠️  Selected UTXOs (${totalValue} sats) < amount (${amount} sats)`);
+        await new Promise(r => setTimeout(r, 1500));
+        continue;
+      }
+      
+      console.log(`\n✅ Sending ${amount} sats to ${destination}...`);
+      const psbt = await createPsbtWithUtxos(destination, amount, selectedUtxos);
+      if (!psbt) return;
+      
+      const signed = signPsbt(psbt);
+      if (!signed) return;
+      
+      await broadcast(signed);
+      return;
+    }
+    
+    if (choice === 'a') {
+      // Select all
+      for (let i = 0; i < selected.length; i++) selected[i] = true;
+    } else if (choice === 'n') {
+      // Deselect all
+      for (let i = 0; i < selected.length; i++) selected[i] = false;
+    } else if (choice === 'r') {
+      // Select only rare/inscribed
+      for (let i = 0; i < detailedUtxos.length; i++) {
+        selected[i] = detailedUtxos[i].inscription || detailedUtxos[i].rareSat;
+      }
+    } else if (choice >= '1' && choice <= String(detailedUtxos.length)) {
+      // Toggle specific UTXO
+      const idx = parseInt(choice) - 1;
+      selected[idx] = !selected[idx];
+    }
+  }
+}
+
+async function sendAllWithCoinControl(destination) {
+  const detailedUtxos = await getDetailedUtxosForSelection();
+  
+  if (detailedUtxos.length === 0) {
+    console.log("No UTXOs found.");
+    return;
+  }
+  
+  const selected = detailedUtxos.map(() => true);
+  
+  console.clear();
+  
+  while (true) {
+    console.clear();
+    const totalSelected = detailedUtxos.filter((_, i) => selected[i]).reduce((s, u) => s + u.value, 0);
+    const fee = 1000;
+    printCoinControlMenu(detailedUtxos, selected, destination, totalSelected - fee, true);
+    
+    const rl = createInterface();
+    const choice = await new Promise(resolve => rl.question('', resolve));
+    rl.close();
+    
+    if (choice === 'q') {
+      console.log("\n❌ Cancelled.");
+      return;
+    }
+    
+    if (choice === '') {
+      const selectedUtxos = detailedUtxos.filter((_, i) => selected[i]);
+      if (selectedUtxos.length === 0) {
+        console.log("\n⚠️  No UTXOs selected!");
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
+      
+      const totalValue = selectedUtxos.reduce((sum, u) => sum + u.value, 0);
+      const sendAmount = totalValue - 1000; // leave 1000 for fee
+      
+      if (sendAmount <= 0) {
+        console.log(`\n⚠️  Not enough sats for fee (need > 1000)`);
+        await new Promise(r => setTimeout(r, 1500));
+        continue;
+      }
+      
+      console.log(`\n✅ Sending ${sendAmount} sats (all) to ${destination}...`);
+      const psbt = await createPsbtWithUtxos(destination, sendAmount, selectedUtxos);
+      if (!psbt) return;
+      
+      const signed = signPsbt(psbt);
+      if (!signed) return;
+      
+      await broadcast(signed);
+      return;
+    }
+    
+    if (choice === 'a') {
+      for (let i = 0; i < selected.length; i++) selected[i] = true;
+    } else if (choice === 'n') {
+      for (let i = 0; i < selected.length; i++) selected[i] = false;
+    } else if (choice === 'r') {
+      for (let i = 0; i < detailedUtxos.length; i++) {
+        selected[i] = detailedUtxos[i].inscription || detailedUtxos[i].rareSat;
+      }
+    } else if (choice >= '1' && choice <= String(detailedUtxos.length)) {
+      const idx = parseInt(choice) - 1;
+      selected[idx] = !selected[idx];
+    }
+  }
+}
+
+async function getDetailedUtxosForSelection() {
+  const baseUrl = wallet.testnet 
+    ? "https://mempool.space/testnet/api" 
+    : "https://mempool.space/api";
+  
+  let address = wallet.address;
+  if (!address && derivedKey) {
+    const { payments, networks } = require("bitcoinjs-lib");
+    const p2tr = payments.p2tr({ 
+      internalPubkey: derivedKey.xOnly, 
+      network: wallet.testnet ? networks.testnet : networks.bitcoin 
+    });
+    address = p2tr.address;
+  }
+  
+  if (!address) return [];
+  
+  try {
+    const response = await axios.get(`${baseUrl}/address/${address}/utxo`);
+    const utxos = response.data;
+    const blockHeight = await getBlockHeight();
+    
+    const detailed = [];
+    for (const utxo of utxos) {
+      const inscription = await checkInscription(utxo.txid, utxo.vout);
+      const rareSat = identifyRareSat(utxo.value, blockHeight);
+      
+      detailed.push({
+        ...utxo,
+        inscription: inscription.hasInscription ? { id: inscription.inscriptionId } : null,
+        rareSat: rareSat.isRare ? rareSat : null
+      });
+    }
+    
+    return detailed;
+  } catch (e) {
+    return [];
+  }
+}
+
+function printCoinControlMenu(utxos, selected, destination, amount, isSendAll = false) {
+  const totalSelected = utxos.filter((_, i) => selected[i]).reduce((s, u) => s + u.value, 0);
+  const fee = 1000;
+  const sendAmount = isSendAll ? totalSelected - fee : amount;
+  
+  console.log(`\n🪙 COIN CONTROL - ${isSendAll ? 'SEND ALL' : 'SEND ' + amount + ' sats'}`);
+  console.log(`   Destination: ${destination}`);
+  console.log(`   Selected: ${utxos.filter((_, i) => selected[i]).length} UTXOs / ${utxos.length} total`);
+  console.log(`   Total: ${totalSelected} sats`);
+  if (!isSendAll) {
+    console.log(`   Need: ${amount} sats`);
+    console.log(`   Status: ${totalSelected >= amount ? '✅' : '❌'} ${totalSelected >= amount ? 'OK' : 'Insufficient'}`);
+  } else {
+    console.log(`   Will send: ${sendAmount} sats (after ${fee} fee)`);
+  }
+  console.log(`\n${'#'.padEnd(3)} ${'Status'.padEnd(8)} ${'Value'.padEnd(12)} ${'Features'.padEnd(25)} TXID:VOUT`);
+  console.log('─'.repeat(80));
+  
+  for (let i = 0; i < utxos.length; i++) {
+    const u = utxos[i];
+    const sel = selected[i] ? '[✓]' : '[ ]';
+    const value = u.value.toString().padEnd(12);
+    
+    let features = '';
+    if (u.inscription) features += '📜 ';
+    if (u.rareSat) features += '⭐ ';
+    features = features.padEnd(25);
+    
+    const txid = `${u.txid.substring(0, 8)}...:${u.vout}`;
+    console.log(`${String(i + 1).padEnd(3)} ${sel.padEnd(8)} ${value} ${features} ${txid}`);
+  }
+  
+  console.log(`\n[1-${utxos.length}] Toggle  [a]ll  [n]one  [r]are/inscribed  [Enter] Send  [q]uit`);
+}
+
+async function createPsbtWithUtxos(destination, amount, utxos) {
+  let keyPair, internalPubkey;
+  if (derivedKey) {
+    keyPair = ECPair.fromPrivateKey(derivedKey.privateKey, currentNetwork);
+    internalPubkey = derivedKey.xOnly;
+  } else {
+    keyPair = ECPair.fromWIF(wallet.privateKey, currentNetwork);
+    internalPubkey = toXOnly(keyPair.publicKey);
+  }
+  
+  let address = wallet.address;
+  if (!address && derivedKey) {
+    const { payments, networks } = require("bitcoinjs-lib");
+    const p2tr = payments.p2tr({ 
+      internalPubkey: derivedKey.xOnly, 
+      network: wallet.testnet ? networks.testnet : networks.bitcoin 
+    });
+    address = p2tr.address;
+  }
+  
+  const psbt = new bitcoin.Psbt({ network: currentNetwork });
+  
+  for (const utxo of utxos) {
+    try {
+      const txResponse = await axios.get(
+        `${wallet.testnet ? "https://mempool.space/testnet/api" : "https://mempool.space/api"}/tx/${utxo.txid}`
+      );
+      const tx = txResponse.data;
+      
+      psbt.addInput({
+        hash: utxo.txid,
+        index: utxo.vout,
+        witnessUtxo: {
+          script: Buffer.from(tx.vout[utxo.vout].scriptpubkey, "hex"),
+          value: tx.vout[utxo.vout].value,
+        },
+        tapInternalKey: internalPubkey,
+      });
+    } catch (e) {
+      console.log(`Error fetching tx ${utxo.txid}: ${e.message}`);
+    }
+  }
+  
+  const totalIn = utxos.reduce((sum, u) => sum + u.value, 0);
+  const change = totalIn - amount - 1000;
+  
+  psbt.addOutput({ address: destination, value: amount });
+  
+  if (change > 0) {
+    psbt.addOutput({ address: address, value: change });
+  }
+  
+  return psbt;
+}
+
+// Simple send-all
+async function sendAll(destination) {
+  const utxos = await getDetailedUtxos();
+  const totalValue = utxos.reduce((sum, u) => sum + u.value, 0);
+  const fee = 1000;
+  const amount = totalValue - fee;
+  
+  if (amount <= 0) {
+    console.log("❌ Not enough balance for fee.");
+    return;
+  }
+  
+  console.log(`📤 Sending ${amount} sats (all) to ${destination}...`);
+  
+  const psbt = await createPsbt(destination, amount);
+  if (!psbt) return;
+  
+  console.log(`✍️  Signing...`);
+  const signed = signPsbt(psbt);
+  if (!signed) return;
+  
+  console.log(`📡 Broadcasting...`);
+  await broadcast(signed);
+}
+
 // CLI
 const args = process.argv.slice(2);
 const testnetIdx = args.indexOf("--testnet");
@@ -845,10 +1156,56 @@ switch (command) {
   
   case "send":
     loadWallet();
+    const coinControlIdx = args.indexOf('--coin-select');
+    const interactive = coinControlIdx !== -1;
+    
+    if (interactive) {
+      args.splice(coinControlIdx, 1);
+    }
+    
     if (!args[1] || !args[2]) {
-      console.log("Usage: send <address> <amount_in_sats>");
+      console.log(`Usage: send <address> <amount_in_sats> [--coin-select]
+      
+Options:
+  --coin-select    Interactive coin selection (UTXO picker)
+  
+With --coin-select:
+  - Arrow keys to navigate
+  - Spacebar to toggle UTXO selection
+  - Enter to confirm and send
+  - 'a' to select all
+  - 'n' to deselect all
+  - 'r' to select only rare/inscribed
+  - 'q' to quit`);
     } else {
-      send(args[1], parseInt(args[2]));
+      if (interactive) {
+        sendWithCoinControl(args[1], parseInt(args[2]));
+      } else {
+        send(args[1], parseInt(args[2]));
+      }
+    }
+    break;
+  
+  case "send-all":
+    loadWallet();
+    const sendAllCoinIdx = args.indexOf('--coin-select');
+    const sendAllInteractive = sendAllCoinIdx !== -1;
+    
+    if (sendAllInteractive) {
+      args.splice(sendAllCoinIdx, 1);
+    }
+    
+    if (!args[1]) {
+      console.log(`Usage: send-all <address> [--coin-select]
+      
+Sends all UTXOs (minus fee). Options:
+  --coin-select    Interactive coin selection`);
+    } else {
+      if (sendAllInteractive) {
+        sendAllWithCoinControl(args[1]);
+      } else {
+        sendAll(args[1]);
+      }
     }
     break;
   
