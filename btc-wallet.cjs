@@ -872,8 +872,18 @@ switch (command) {
     if (!args[1]) {
       console.log("Usage: sign-psbt <psbt_file>");
     } else {
-      const psbtBase64 = fs.readFileSync(args[1], "utf8");
-      const psbt = bitcoin.Psbt.fromBase64(psbtBase64);
+      const psbtData = fs.readFileSync(args[1]);
+      let psbt;
+      
+      // Detect format: binary starts with "psbt", base64 is text
+      if (psbtData[0] === 0x70 && psbtData[1] === 0x73 && psbtData[2] === 0x62 && psbtData[3] === 0x74) {
+        // Binary PSBT
+        psbt = bitcoin.Psbt.fromBuffer(psbtData);
+      } else {
+        // Base64 PSBT
+        psbt = bitcoin.Psbt.fromBase64(psbtData.toString("utf8"));
+      }
+      
       const signed = signPsbt(psbt);
       if (signed) {
         const outFile = args[1].replace(".psbt", "-signed.psbt");
