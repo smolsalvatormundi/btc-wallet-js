@@ -802,6 +802,13 @@ if (testnetIdx !== -1) {
   args.splice(testnetIdx, 1);
 }
 
+// Check for --version
+if (args.includes("--version") || args.includes("-v")) {
+  console.log("BTC Wallet CLI v0.0.2");
+  console.log("BIP86 Taproot Wallet with Ordinal Protection");
+  process.exit(0);
+}
+
 const command = args[0];
 
 switch (command) {
